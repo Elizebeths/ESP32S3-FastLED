@@ -1,17 +1,31 @@
-#include <Arduino.h>
 #include <FastLED.h>
-#include<WiFi.h>
-const char* id="kuigenb666";   //定义两个字符串指针常量
-const char* psw="12345678900";
+
+#define DATA_PIN 4       // DIN 接 GPIO4
 
 void setup() {
-  Serial.begin(115200);
-  WiFi.begin(id,psw);
-  while(WiFi.status()!=WL_CONNECTED){			//未连接上
-    delay(500);
-    Serial.println("正在连接...");
-  }
-  Serial.println("连接成功！");				//连接上
+    Serial.begin(115200);
+    pinMode(DATA_PIN, OUTPUT);  // GPIO4 初始化为输出模式
 }
-void loop(){							//空循环
+bool state = true;  // 放到外面，跨循环保持状态
+
+void loop() {
+    // //每当i为偶数时，GPIO4置为高电平；当i为奇数时，GPIO4置为低电平
+    // if (i % 2 == 0) {
+    //     digitalWrite(DATA_PIN, HIGH);
+    // Serial.printf("现在是第%d秒，GPIO4为高电平\n", i);
+    // } 
+    // else {
+    //     digitalWrite(DATA_PIN, LOW);
+    //     Serial.printf("现在是第%d秒，GPIO4为低电平\n", i);
+    // }
+    if(state){
+        digitalWrite(DATA_PIN, HIGH);
+        Serial.println("GPIO4为高电平");
+    } 
+    else {
+        digitalWrite(DATA_PIN, LOW);
+        Serial.println("GPIO4为低电平");
+    }
+    delay(20);
+    state = !state;
 }
