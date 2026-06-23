@@ -1,0 +1,772 @@
+/**
+ * ===========================================================================
+ *  8x8 LED 矩阵灯效演示程序
+ *  ===========================================================================
+ *  硬件平台:  ESP32 / Arduino
+ *  灯珠型号:  WS2812B (NeoPixel)
+ *  矩阵布局:  8 行 × 8 列 (共 64 颗灯珠)
+ *  数据引脚:  GPIO 4
+ *  
+ *  功能概述:
+ *    本程序在 8×8 LED 矩阵上循环演示 10 种不同的灯光效果,
+ *    每种效果运行约 5 秒后自动切换到下一种。所有效果均采用
+ *    非阻塞 (millis) 计时方式, 不会阻塞主循环。
+ *  
+ *  灯效列表:
+ *    1.  Color Wipe    — 颜色扫描 (逐列填充)
+ *    2.  Rainbow       — 彩虹渐变旋转
+ *    3.  Theater Chase — 剧院追逐 (跑马灯)
+ *    4.  Breathing     — 呼吸灯 (明暗渐变)
+ *    5.  Twinkle       — 随机闪烁 (星星效果)
+ *    6.  Snake         — 贪吃蛇 (往返游走)
+ *    7.  Comet         — 彗星拖尾
+ *    8.  Ripple        — 中心扩散波纹
+ *    9.  Bounce        — 弹跳像素
+ *    10. Checkerboard  — 棋盘格交替
+ * ===========================================================================
+ */
+
+#include <Arduino.h>
+#include <Adafruit_NeoPixel.h>
+
+// ===========================================================================
+//  硬件配置 — 灯带参数
+// ===========================================================================
+
+/** LED 数据信号引脚 (GPIO 编号) */
+#define LED_PIN         4
+
+/** 灯带上的 LED 总数 */
+#define NUM_LEDS        64
+
+/** 矩阵宽度 (列数) */
+#define MATRIX_W        8
+
+/** 矩阵高度 (行数) */
+#define MATRIX_H        8
+
+/** 全局亮度上限 (0 ~ 255, 值越小越暗, 保护眼睛和电源) */
+#define BRIGHTNESS      4
+
+// ===========================================================================
+//  子区域定义 — 在完整灯带上划定一个逻辑子矩阵
+//  通过 SUB_X/SUB_Y 偏移可将效果映射到灯带的任意区域
+// ===========================================================================
+
+/** 子区域左上角 X 坐标 (列偏移) */
+#define SUB_X           0
+
+/** 子区域左上角 Y 坐标 (行偏移) */
+#define SUB_Y           0
+
+/** 子区域宽度 (列数) */
+#define SUB_W           8
+
+/** 子区域高度 (行数) */
+#define SUB_H           8
+
+/** 子区域内像素总数 */
+#define SUB_SIZE        (SUB_W * SUB_H)     // 8 × 8 = 64
+
+// ===========================================================================
+//  全局对象 — NeoPixel 灯带实例
+//  参数: LED 数量, 数据引脚, 颜色格式 + 通信速率
+// ===========================================================================
+Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_RGB + NEO_KHZ800);
+
+// ===========================================================================
+//  工具函数
+// ===========================================================================
+
+/**
+ * 将二维矩阵坐标 (row, col) 转换为一维灯带索引
+ *
+ * @param row  行号 (0 ~ MATRIX_H-1)
+ * @param col  列号 (0 ~ MATRIX_W-1)
+ * @return     对应的一维灯带像素索引
+ */
+int xyToIndex(int row, int col) {
+    return row * MATRIX_W + col;
+}
+
+/**
+ * 设置子区域内指定坐标的像素颜色
+ *
+ * 该函数将子区域内的逻辑坐标 (x, y) 映射到真实灯带坐标,
+ * 方便编写与子区域大小无关的灯效代码。
+ *
+ * @param x     子区域内的列坐标 (0 ~ SUB_W-1)
+ * @param y     子区域内的行坐标 (0 ~ SUB_H-1)
+ * @param color 32 位 RGB 颜色值 (由 strip.Color() 生成)
+ */
+void setSubPixel(int x, int y, uint32_t color) {
+    // 将子区域坐标加上偏移量, 映射到物理灯带索引
+    strip.setPixelColor(xyToIndex(SUB_Y + y, SUB_X + x), color);
+}
+
+/**
+ * 清空整个子区域 (将所有像素设为黑色/熄灭)
+ */
+void clearSubMatrix() {
+    for (int y = 0; y < SUB_H; y++) {
+        for (int x = 0; x < SUB_W; x++) {
+            setSubPixel(x, y, 0);
+        }
+    }
+}
+
+/**
+ * HSV 色彩空间 → 32 位 RGB 颜色值转换
+ *
+ * 使用简化算法将 HSV 转换为 RGB, 方便生成彩虹色等渐变效果。
+ * hue 值域为 0~255 (映射到 0°~360° 色相环)。
+ *
+ * @param hue  色相 (0 ~ 255), 0 = 红, 85 ≈ 绿, 170 ≈ 蓝
+ * @param sat  饱和度 (0 ~ 255), 默认 255 (最大)
+ * @param val  明度 (0 ~ 255), 默认 255 (最亮)
+ * @return     32 位 RGB 颜色值, 可直接传给 setPixelColor()
+ */
+uint32_t hsvColor(uint8_t hue, uint8_t sat = 255, uint8_t val = 255) {
+    uint8_t r, g, b;
+
+    // 将 0~255 的 hue 划分为 6 个扇区, 每个扇区 43 个单位
+    uint8_t region    = hue / 43;
+
+    // 当前扇区内的偏移量, 放大 6 倍便于整数运算
+    uint8_t remainder = (hue - (region * 43)) * 6;
+
+    // 中间过渡变量 (使用位移代替浮点除法)
+    uint8_t p = (val * (255 - sat)) >> 8;
+    uint8_t q = (val * (255 - ((sat * remainder) >> 8))) >> 8;
+    uint8_t t = (val * (255 - ((sat * (255 - remainder)) >> 8))) >> 8;
+
+    // 根据所在扇区组合 R、G、B 分量
+    switch (region) {
+        case 0:  r = val; g = t;   b = p;   break;   // 红 → 黄
+        case 1:  r = q;   g = val; b = p;   break;   // 黄 → 绿
+        case 2:  r = p;   g = val; b = t;   break;   // 绿 → 青
+        case 3:  r = p;   g = q;   b = val; break;   // 青 → 蓝
+        case 4:  r = t;   g = p;   b = val; break;   // 蓝 → 品红
+        default: r = val; g = p;   b = q;   break;   // 品红 → 红
+    }
+
+    return strip.Color(r, g, b);
+}
+
+// ===========================================================================
+//  灯效函数
+//  
+//  约定:
+//    - 每个效果函数返回 bool 值: true 表示效果仍在运行, false 表示一轮结束
+//    - 所有函数通过 millis() 实现非阻塞计时, 不会卡死主循环
+//    - 大部分函数需要调用方维护持久状态变量 (step、hue 等)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+//  效果 1: 颜色扫描 (Color Wipe)
+//  从左到右逐列填充指定颜色, 填满整个子区域后本轮结束
+// ---------------------------------------------------------------------------
+
+/**
+ * 颜色扫描效果 — 逐列填充纯色
+ *
+ * @param color   要填充的 32 位 RGB 颜色
+ * @param speedMs 每帧间隔时间 (毫秒), 值越小扫描越快
+ * @param timer   帧计时器引用, 由调用方维护
+ * @param step    当前已填充的列数引用, 由调用方维护
+ * @return        true = 效果继续, false = 已完成一轮扫描
+ */
+bool effectColorWipe(uint32_t color, int speedMs,
+                     unsigned long &timer, int &step) {
+    // 非阻塞计时: 未到下一帧时间则直接返回
+    if (millis() - timer < (unsigned long)speedMs) {
+        return true;
+    }
+    timer = millis();
+
+    clearSubMatrix();
+
+    // 如果尚未填满所有列, 继续填充下一列
+    if (step < SUB_W) {
+        for (int y = 0; y < SUB_H; y++) {
+            setSubPixel(step, y, color);        // 填充第 step 列的全部像素
+        }
+        step++;
+        strip.show();                           // 刷新灯带显示
+        return true;
+    }
+
+    // 已填满所有列, 本轮结束, 重置状态
+    step = 0;
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+//  效果 2: 彩虹渐变旋转 (Rainbow)
+//  整个矩阵显示流动的彩虹色, 色相持续偏移产生旋转动画
+// ---------------------------------------------------------------------------
+
+/**
+ * 彩虹旋转效果 — 全矩阵显示流动彩虹色
+ *
+ * 每个像素的颜色由其坐标和全局 hue 偏移共同决定,
+ * hue 每帧增加 1, 形成彩虹色在矩阵上流动旋转的视觉效果。
+ *
+ * @param speedMs 每帧间隔时间 (毫秒)
+ * @param timer   帧计时器引用
+ * @param hue     全局色相偏移引用 (0~255), 每帧自增
+ * @return        始终返回 true (无限循环效果)
+ */
+bool effectRainbow(int speedMs, unsigned long &timer, uint8_t &hue) {
+    if (millis() - timer < (unsigned long)speedMs) {
+        return true;
+    }
+    timer = millis();
+
+    // 遍历所有像素, 根据坐标和当前 hue 计算每个像素的颜色
+    for (int y = 0; y < SUB_H; y++) {
+        for (int x = 0; x < SUB_W; x++) {
+            uint8_t h = hue + (x + y) * 16;    // 坐标越远色相偏移越大
+            setSubPixel(x, y, hsvColor(h));
+        }
+    }
+
+    strip.show();
+    hue++;                                      // 色相偏移量递增, 产生流动效果
+    return true;                                // 无限循环
+}
+
+// ---------------------------------------------------------------------------
+//  效果 3: 剧院追逐 (Theater Chase)
+//  经典的跑马灯效果, 每 3 个像素为一组交替亮灭
+// ---------------------------------------------------------------------------
+
+/**
+ * 剧院追逐效果 — 跑马灯式交替闪烁
+ *
+ * 在矩阵上产生类似剧院招牌灯的追逐动画: 每 3 个像素中亮 1 个,
+ * 亮的位置每帧向前移动一格。
+ *
+ * @param color   追逐灯的颜色
+ * @param speedMs 每帧间隔时间 (毫秒)
+ * @param timer   帧计时器引用
+ * @param step    当前追逐相位偏移引用
+ * @return        始终返回 true (无限循环效果)
+ */
+bool effectTheaterChase(uint32_t color, int speedMs,
+                        unsigned long &timer, int &step) {
+    if (millis() - timer < (unsigned long)speedMs) {
+        return true;
+    }
+    timer = millis();
+
+    clearSubMatrix();
+
+    // 凡 (x + y + step) 能被 3 整除的像素点亮, 其余熄灭
+    for (int y = 0; y < SUB_H; y++) {
+        for (int x = 0; x < SUB_W; x++) {
+            if ((x + y + step) % 3 == 0) {
+                setSubPixel(x, y, color);
+            }
+        }
+    }
+
+    strip.show();
+    step++;                                     // 相位前移, 产生追逐动画
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+//  效果 4: 呼吸灯 (Breathing)
+//  整个矩阵统一亮度从暗到亮再到暗, 模拟呼吸节奏
+// ---------------------------------------------------------------------------
+
+/**
+ * 呼吸灯效果 — 全矩阵亮度正弦波式渐变
+ *
+ * 所有像素显示同一颜色, 但亮度在 0~255 之间平滑变化,
+ * 从暗→亮→暗完成一次呼吸循环。
+ *
+ * @param color   呼吸灯的颜色
+ * @param speedMs 亮度变化间隔 (毫秒), 值越小呼吸越快
+ * @param timer   帧计时器引用
+ * @param step    当前亮度值 (0~255) 引用
+ * @param up      亮度变化方向引用: true = 变亮, false = 变暗
+ * @return        true = 继续呼吸, false = 完成一次完整呼吸循环
+ */
+bool effectBreathing(uint32_t color, int speedMs,
+                     unsigned long &timer, int &step, bool &up) {
+    if (millis() - timer < (unsigned long)speedMs) {
+        return true;
+    }
+    timer = millis();
+
+    // 根据当前亮度 step 缩放 RGB 各分量
+    uint8_t brightness = step;
+    uint32_t dimColor = strip.Color(
+        (uint8_t)((color >> 16 & 0xFF) * brightness / 255),   // R
+        (uint8_t)((color >> 8  & 0xFF) * brightness / 255),   // G
+        (uint8_t)((color       & 0xFF) * brightness / 255)    // B
+    );
+
+    // 将调暗后的颜色填充整个矩阵
+    for (int y = 0; y < SUB_H; y++) {
+        for (int x = 0; x < SUB_W; x++) {
+            setSubPixel(x, y, dimColor);
+        }
+    }
+    strip.show();
+
+    // 控制亮度升降方向
+    if (up) {
+        step += 3;                              // 逐渐变亮
+        if (step >= 255) {
+            step = 255;
+            up = false;                         // 到达最亮, 转为变暗
+        }
+    } else {
+        step -= 3;                              // 逐渐变暗
+        if (step <= 0) {
+            step = 0;
+            up = true;                          // 到达最暗, 转为变亮
+            return false;                       // 一次呼吸循环完成
+        }
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+//  效果 5: 随机闪烁 / 星星 (Twinkle)
+//  每帧随机点亮 3 个像素, 呈现星空闪烁效果
+// ---------------------------------------------------------------------------
+
+/**
+ * 随机闪烁效果 — 模拟星空
+ *
+ * 每帧在矩阵上随机选择 3 个位置点亮随机颜色,
+ * 上一帧的像素自动清除, 产生星星闪烁的视觉效果。
+ *
+ * @param speedMs 每帧间隔时间 (毫秒)
+ * @param timer   帧计时器引用
+ * @param count   累计闪烁次数引用 (仅用于外部统计)
+ * @return        始终返回 true (无限循环效果)
+ */
+bool effectTwinkle(int speedMs, unsigned long &timer, uint16_t &count) {
+    if (millis() - timer < (unsigned long)speedMs) {
+        return true;
+    }
+    timer = millis();
+
+    clearSubMatrix();
+
+    // 每帧随机点亮 3 个像素
+    for (int i = 0; i < 3; i++) {
+        int x = random(SUB_W);
+        int y = random(SUB_H);
+        setSubPixel(x, y, hsvColor(random(255)));   // 随机位置 + 随机颜色
+    }
+
+    strip.show();
+    count++;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+//  效果 6: 贪吃蛇 (Snake)
+//  一个亮点在矩阵上来回穿梭, 后面拖着渐暗的尾巴
+// ---------------------------------------------------------------------------
+
+/**
+ * 贪吃蛇效果 — 带拖尾的往返游走
+ *
+ * 模拟贪吃蛇在矩阵上沿蛇形路径来回移动,
+ * 头部最亮, 尾部逐渐变暗, 形成拖尾效果。
+ *
+ * @param speedMs   每帧间隔时间 (毫秒)
+ * @param timer     帧计时器引用
+ * @param pos       蛇头在一维展开路径上的位置引用
+ * @param direction  未使用 (保留参数, 蛇移动方向由 pos 递增决定)
+ * @param len       尾巴长度 (亮起的像素数)
+ * @return          始终返回 true (无限循环效果)
+ */
+bool effectSnake(int speedMs, unsigned long &timer,
+                 int &pos, int &direction, int &len) {
+    if (millis() - timer < (unsigned long)speedMs) {
+        return true;
+    }
+    timer = millis();
+
+    clearSubMatrix();
+
+    // 蛇形扫描路径总长度 = 来回两倍子区域像素数
+    // 前半段正向 (0 → 63), 后半段反向 (63 → 0)
+    int total = SUB_SIZE * 2;
+
+    // 计算当前蛇头在一维路径上的索引
+    int p   = pos % total;
+    int idx;
+    if (p < SUB_SIZE) {
+        idx = p;                                // 正向段
+    } else {
+        idx = total - 1 - p;                    // 反向段
+    }
+
+    // 将一维索引转换为二维坐标
+    int x = idx % SUB_W;
+    int y = idx / SUB_W;
+
+    // 绘制尾巴: 从蛇头位置往回画 len 个像素, 亮度递减
+    for (int i = 0; i < len; i++) {
+        int tailP = (pos - i + total) % total;   // 尾巴段位置 (防止负数)
+        int tailIdx;
+        if (tailP < SUB_SIZE) {
+            tailIdx = tailP;
+        } else {
+            tailIdx = total - 1 - tailP;
+        }
+
+        int tx = tailIdx % SUB_W;
+        int ty = tailIdx / SUB_W;
+
+        // 尾巴越远越暗
+        uint8_t bright = 255 - i * 50;
+        setSubPixel(tx, ty, strip.Color(bright, bright, bright));
+    }
+
+    strip.show();
+    pos++;                                      // 蛇头前进一格
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+//  效果 7: 彗星拖尾 (Comet)
+//  一个彩色亮点沿矩阵蛇形路径飞行, 后面拖曳渐暗尾迹
+// ---------------------------------------------------------------------------
+
+/**
+ * 彗星拖尾效果 — 彩色光点往返飞行
+ *
+ * 与贪吃蛇类似但使用浮点位置实现更平滑的移动,
+ * 尾巴始终为 3 个像素长, 颜色渐暗。
+ *
+ * @param color   彗星颜色
+ * @param speedMs 每帧间隔时间 (毫秒)
+ * @param timer   帧计时器引用
+ * @param pos     彗星在一维展开路径上的浮点位置引用
+ * @param dir     移动方向引用: +1 = 正向, -1 = 反向
+ * @return        始终返回 true (无限循环效果)
+ */
+bool effectComet(uint32_t color, int speedMs,
+                 unsigned long &timer, float &pos, int &dir) {
+    if (millis() - timer < (unsigned long)speedMs) {
+        return true;
+    }
+    timer = millis();
+
+    clearSubMatrix();
+
+    // 根据当前位置计算彗星头部的二维坐标
+    int x = (int)pos % SUB_W;
+    int y = ((int)pos / SUB_W) % SUB_H;
+
+    // 绘制拖尾: 从头部往回画 3 个像素
+    for (int t = 0; t < 3; t++) {
+        int trailP = (int)pos - t * dir;        // 沿反方向找尾巴位置
+        if (trailP < 0 || trailP >= SUB_SIZE) {
+            continue;                           // 越界则跳过
+        }
+
+        int tx = trailP % SUB_W;
+        int ty = trailP / SUB_W;
+
+        // 尾巴越远越暗 (每级降低 85/255 ≈ 33% 亮度)
+        uint8_t dim = 255 - t * 85;
+
+        setSubPixel(tx, ty, strip.Color(
+            (uint8_t)((color >> 16 & 0xFF) * dim / 255),   // R
+            (uint8_t)((color >> 8  & 0xFF) * dim / 255),   // G
+            (uint8_t)((color       & 0xFF) * dim / 255)    // B
+        ));
+    }
+
+    strip.show();
+
+    // 彗星移动 (每次移动 0.5 像素, 浮点位置使动画更平滑)
+    pos += dir * 0.5f;
+
+    // 到达边界时反向
+    if (pos >= SUB_SIZE - 0.5f) {
+        pos = SUB_SIZE - 1;
+        dir = -1;
+    }
+    if (pos <= 0) {
+        pos = 0;
+        dir = 1;
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+//  效果 8: 中心扩散波纹 (Ripple)
+//  从矩阵中心向外扩散的彩色圆环, 一圈结束后重新开始
+// ---------------------------------------------------------------------------
+
+/**
+ * 中心扩散波纹效果 — 彩色同心圆环
+ *
+ * 以矩阵中心为圆心, 绘制一个半径逐渐增大的彩色圆环。
+ * 到达最大半径后本轮结束, 下一轮从半径 0 重新开始。
+ *
+ * @param speedMs 每帧间隔时间 (毫秒)
+ * @param timer   帧计时器引用
+ * @param radius  当前波纹半径引用 (单位: 像素距离)
+ * @return        true = 继续扩散, false = 一轮波纹结束
+ */
+bool effectRipple(int speedMs, unsigned long &timer, int &radius) {
+    if (millis() - timer < (unsigned long)speedMs) {
+        return true;
+    }
+    timer = millis();
+
+    clearSubMatrix();
+
+    // 矩阵中心坐标 (浮点, 精确到矩阵几何中心)
+    float cx = (SUB_W - 1) / 2.0f;
+    float cy = (SUB_H - 1) / 2.0f;
+
+    // 遍历所有像素, 距离中心约等于 radius 的像素点亮
+    for (int y = 0; y < SUB_H; y++) {
+        for (int x = 0; x < SUB_W; x++) {
+            // 计算到中心的欧几里得距离
+            float dist = sqrtf((x - cx) * (x - cx) + (y - cy) * (y - cy));
+
+            // 距离在当前半径 ±0.6 范围内的像素构成圆环
+            if (fabsf(dist - radius) < 0.6f) {
+                setSubPixel(x, y, hsvColor(radius * 20));   // 颜色随半径变化
+            }
+        }
+    }
+
+    strip.show();
+    radius++;
+
+    // 半径超过最大范围时结束本轮
+    if (radius > 7) {
+        radius = 0;
+        return false;
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+//  效果 9: 弹跳像素 (Bounce)
+//  单个白色像素在矩阵内反弹, 类似 DVD 屏保
+// ---------------------------------------------------------------------------
+
+/**
+ * 弹跳像素效果 — 单个亮点在矩阵内反弹
+ *
+ * 模拟经典屏幕保护程序的弹跳动画: 一个白色像素
+ * 以恒定速度在矩阵内移动, 碰到边缘时反弹。
+ *
+ * @param speedMs 每帧间隔时间 (毫秒)
+ * @param timer   帧计时器引用
+ * @param bx      像素当前 X 坐标 (浮点) 引用
+ * @param by      像素当前 Y 坐标 (浮点) 引用
+ * @param vx      X 方向速度 (浮点) 引用
+ * @param vy      Y 方向速度 (浮点) 引用
+ * @return        始终返回 true (无限循环效果)
+ */
+bool effectBounce(int speedMs, unsigned long &timer,
+                  float &bx, float &by, float &vx, float &vy) {
+    if (millis() - timer < (unsigned long)speedMs) {
+        return true;
+    }
+    timer = millis();
+
+    clearSubMatrix();
+
+    // 在当前浮点位置绘制白色像素 (取整显示)
+    setSubPixel((int)bx, (int)by, strip.Color(255, 255, 255));
+    strip.show();
+
+    // 更新位置
+    bx += vx;
+    by += vy;
+
+    // 碰到左右边界 → X 方向反弹
+    if (bx <= 0 || bx >= SUB_W - 1) {
+        vx = -vx;
+    }
+
+    // 碰到上下边界 → Y 方向反弹
+    if (by <= 0 || by >= SUB_H - 1) {
+        vy = -vy;
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+//  效果 10: 棋盘格交替 (Checkerboard)
+//  矩阵显示棋盘格图案, 两种颜色持续偏移色相
+// ---------------------------------------------------------------------------
+
+/**
+ * 棋盘格交替效果 — 双色棋盘格色相旋转
+ *
+ * 将 8×8 矩阵分为黑白棋盘格, 奇数格和偶数格各用
+ * 一种颜色, 两种颜色的色相持续流动变化。
+ *
+ * @param speedMs   每帧间隔时间 (毫秒)
+ * @param timer     帧计时器引用
+ * @param hueOffset 偶数格色相偏移引用, 每帧 +2; 奇数格 = 偶数格 + 128
+ * @return          始终返回 true (无限循环效果)
+ */
+bool effectCheckerboard(int speedMs, unsigned long &timer, uint8_t &hueOffset) {
+    if (millis() - timer < (unsigned long)speedMs) {
+        return true;
+    }
+    timer = millis();
+
+    // 遍历所有像素, 根据 (x+y) 奇偶性分配两种颜色
+    for (int y = 0; y < SUB_H; y++) {
+        for (int x = 0; x < SUB_W; x++) {
+            if ((x + y) % 2 == 0) {
+                // 偶数格: 使用基础色相
+                setSubPixel(x, y, hsvColor(hueOffset));
+            } else {
+                // 奇数格: 色相偏移 128 (互补色方向)
+                setSubPixel(x, y, hsvColor(hueOffset + 128));
+            }
+        }
+    }
+
+    strip.show();
+    hueOffset += 2;                             // 色相缓慢旋转
+    return true;
+}
+
+// ========== 主程序 ==========
+void setup() {
+    Serial.begin(115200);
+    delay(2000);
+
+    Serial.println("\n=================================");
+    Serial.println("  8x8 LED Effects Demo");
+    Serial.println("=================================");
+
+    strip.begin();
+    strip.setBrightness(BRIGHTNESS);
+    strip.clear();
+    strip.show();
+
+    randomSeed(analogRead(0));
+}
+
+// 效果枚举
+enum Effect {
+    EF_COLOR_WIPE,
+    EF_RAINBOW,
+    EF_THEATER_CHASE,
+    EF_BREATHING,
+    EF_TWINKLE,
+    EF_SNAKE,
+    EF_COMET,
+    EF_RIPPLE,
+    EF_BOUNCE,
+    EF_CHECKERBOARD,
+    EF_COUNT
+};
+
+void loop() {
+    static int currentEffect = 0;
+    static unsigned long effectStart = millis();
+    static const unsigned long EFFECT_DURATION = 5000; // 每个效果运行 5 秒
+
+    // 每个效果的持久状态
+    static unsigned long frameTimer = 0;
+    static int step = 0;
+    static uint8_t hue = 0;
+    static bool breathUp = true;
+    static uint16_t twinkleCount = 0;
+    static int snakePos = 0, snakeDir = 1, snakeLen = 4;
+    static float cometPos = 0; static int cometDir = 1;
+    static int rippleRadius = 0;
+    static float bx = 1.5, by = 1.5, vx = 0.3, vy = 0.2;
+    static uint8_t checkerHue = 0;
+
+    bool running = true;
+
+    switch (currentEffect) {
+        case EF_COLOR_WIPE: {
+            static uint32_t wipeColors[] = {
+                strip.Color(255,0,0), strip.Color(0,255,0), strip.Color(0,0,255),
+                strip.Color(255,255,0), strip.Color(255,0,255), strip.Color(0,255,255)
+            };
+            static int colorIdx = 0;
+            running = effectColorWipe(wipeColors[colorIdx], 80, frameTimer, step);
+            if (!running) { colorIdx = (colorIdx + 1) % 6; }
+            Serial.printf("[ColorWipe] color=%d step=%d\n", colorIdx, step);
+            break;
+        }
+        case EF_RAINBOW:
+            running = effectRainbow(40, frameTimer, hue);
+            break;
+        case EF_THEATER_CHASE:
+            running = effectTheaterChase(strip.Color(255, 100, 0), 100, frameTimer, step);
+            break;
+        case EF_BREATHING: {
+            static uint32_t breathColor = strip.Color(0, 180, 255);
+            running = effectBreathing(breathColor, 8, frameTimer, step, breathUp);
+            if (!running) breathColor = hsvColor(random(255));
+            break;
+        }
+        case EF_TWINKLE:
+            running = effectTwinkle(60, frameTimer, twinkleCount);
+            break;
+        case EF_SNAKE:
+            running = effectSnake(100, frameTimer, snakePos, snakeDir, snakeLen);
+            break;
+        case EF_COMET: {
+            static uint32_t cometColor = strip.Color(255, 60, 0);
+            running = effectComet(cometColor, 50, frameTimer, cometPos, cometDir);
+            break;
+        }
+        case EF_RIPPLE:
+            running = effectRipple(200, frameTimer, rippleRadius);
+            break;
+        case EF_BOUNCE:
+            running = effectBounce(50, frameTimer, bx, by, vx, vy);
+            break;
+        case EF_CHECKERBOARD:
+            running = effectCheckerboard(50, frameTimer, checkerHue);
+            break;
+    }
+
+    // 切换效果
+    if (millis() - effectStart > EFFECT_DURATION) {
+        currentEffect = (currentEffect + 1) % EF_COUNT;
+        effectStart = millis();
+        frameTimer = 0;
+        step = 0;
+        hue = 0;
+        breathUp = true;
+        twinkleCount = 0;
+        snakePos = 0;
+        cometPos = 0; cometDir = 1;
+        rippleRadius = 0;
+        bx = 1.5; by = 1.5; vx = 0.3; vy = 0.2;
+        checkerHue = 0;
+
+        Serial.printf("\n--- Switching to Effect #%d ---\n", currentEffect);
+        const char* names[] = {
+            "Color Wipe", "Rainbow", "Theater Chase", "Breathing",
+            "Twinkle", "Snake", "Comet", "Ripple", "Bounce", "Checkerboard"
+        };
+        Serial.printf("Effect: %s\n", names[currentEffect]);
+    }
+}
