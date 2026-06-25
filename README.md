@@ -1,4 +1,98 @@
-# 项目日志
+# 项目学习日志
+
+## 6.25 
+
+今天浪费了一会儿在纠结于```CFastLED```，后面发现了项目自带有一个cookbook文件夹，里面详细记载了不同阶段应该学什么，今天学习第一阶段“getting-started”中的“concepts”，学习内容如下
+
+### 单个LED的寻址与控制
+灯带中每个LED都有一个索引，这个索引也就是位置，从下标0开始，通过控制灯带数组中的颜色值控制LED，颜色值的类型为CRGB  
+
+```cpp
+CRGB leds[60];  //一个含有64个LED的灯带
+
+leds[0] = CRGB::Red;    // 第一个LED 设置为红色
+leds[5] = CRGB::Blue;   // 第六个LED 设置为蓝色
+```
+
+### RGB与HSV颜色模型
+FastLED有两种颜色模式，分别为RGB与HSV
+
+**RGB：**
+
+```cpp
+//RGB模式通过分别控制红色R，绿色G，蓝色B，实现控制灯的颜色
+//每个颜色的取值范围分别为0-255
+CRGB color_Red = CRGB(255, 0, 0);      		 // Red
+CRGB color_Green = CRGB(0, 255, 0);     		 // Green
+CRGB color_Blue = CRGB(0, 0, 255);      		// Blue
+CRGB color_White = CRGB(255, 255, 255);  	// White
+```
+**HSV:**
+
+```cpp
+//HSV模式通过分别控制色调Hue，饱和度Saturation，明度Value（感觉和亮度没区别），实现控制灯的颜色
+//每个值的取值范围与RGB为0-255
+//色调Hue，对应的颜色范围为：red→ orange → yellow → green → blue → purple → red
+//饱和度Saturation，对应的颜色强度为：		0：白色，255：纯色
+//明度Value，对应亮度为：					0：熄灭，255：最亮
+CHSV hsv_Red = CHSV(0, 255, 255);      		// Red
+CHSV hsv2_Green = CHSV(96, 255, 255);     	// Green
+CHSV hsv3_Blue = CHSV(160, 255, 255);    	// Blue
+
+// 自动转化至RGB
+leds[0] = hsv_Red;
+```
+
+文档建议使用HSV，因为可以只通过改变色调Hue实现丝滑的颜色过渡实现彩虹效果和更简单的亮度控制
+
+### 程序的基本setup与loop模式
+文档规定每个FastLED程序应该遵循：
+
+```cpp
+//配置LED
+void setup() {
+    // 1. 初始化FastLED
+    
+    //告诉程序所用的灯珠芯片LED_TYPE、所接引脚DATA_PIN、以及颜色顺序RGB/GRB，将定义的 LED 数组注册给程序管理。
+    FastLED.addLeds<LED_TYPE, DATA_PIN>(leds, NUM_LEDS);
+    
+    //设置LED亮度
+    FastLED.setBrightness(50);
+}
+
+void loop() {
+    // 2. 计算/更新 LED 颜色
+    leds[0] = CRGB::Red;
+
+    // 3. 将颜色显示到硬件上，只有调用FastLED.show()才能更新物理LED
+    FastLED.show();
+
+    // 4. 可选: 延时或设置帧率
+    delay(20);
+}
+```
+
+### 如何为特定硬件配置FastLED
+配置LED，在```setup()```前告诉程序硬件信息：
+
+```cpp
+#define LED_PIN     5			// 数据引脚
+#define NUM_LEDS    60			// LED灯珠数量
+#define LED_TYPE    WS2812B     // LED灯带的控制芯片
+#define COLOR_ORDER	GRB	// 颜色模式
+
+CRGB leds[NUM_LEDS];			//创建一个灯珠数组，记载每个灯珠的颜色
+```
+
+### 亮度控制与静态变量
+亮度控制:```FastLED.setBrightness(50);```亮度值的范围为0-255  
+使用```static```变了可以在每次loop循环中，记住变量的值
+
+
+## 6.23 请，一定要共地
+
+今天整了一下午这个灯带，限制不住亮度，也试了限制区域，始终是所有灯珠都在乱闪，已经陷入绝境走投无路了，以为是因为电流电压不够，这几天每天忙着买材料，人都已经麻了，准备放弃这个项目去做另一个智能家居的项目了，和AI聊天的过程中突然发现灯带和ESP32需要共地，一开始还觉得共地应该不会是影响乱闪的决定因素，因为乱闪不仅乱，而且亮，非常的亮，抱着试一试的想法，进行了共地！！！结果灯带居然正常了，然后把共地的线一拔，又乱了！居然真的是共地的问题，我折腾了一下午啊😭😭😭😭！！！请，一定要共地！！！  
+而后用ai写了一波测试程序，效果非常完美，现在将完整的测试程序上传
 
 ## 6.17
 
@@ -16,6 +110,3 @@
 主控用ESP32-S3-N16R8，选这个芯片主要是看中它性能比较好，网上有个小智的小机器人都用的他，但是感觉这个东西做的人太多了，也不够新，所以没做这个，但是以后如果有ai方面的需求好像也能用这个，所以买了这个
 
 灯带选的就是最多人用的WS2812B，本来想选8\*16，想着大点的屏幕可以花活多一点😂但是问了AI，说灯珠多了电源要求比较高，遂放弃，最终选择了8\*8
-
-
-
