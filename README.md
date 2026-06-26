@@ -1,33 +1,234 @@
 # 项目学习日志
 
+## 6.26
+
+第一个LED闪烁程序比较简单，简要总结一下其中的函数
+
+**6.26.1库中的一些基本函数**
+```FastLED.setBrightness(scale)```将亮度设置缩放为scale/256  
+实际输出亮度=原始亮度*（scale/256）  
+scale为8位无符号整数，如果传给scale的值不在范围内会自动对256取模
+
+```FastLED.show()```将初始化时注册在```FastLED.addLeds```中的数组的值更新至灯带中  
+可以进行无参调用直接更新，或者带参调用传入scale参数 对本次画面的亮度进行缩放，规则与```FastLED.setBrightness(scale)```相同
+
+```fill_solid(leds, NUM_LEDS, CRGB::Red)```将leds数组对应的NUM_LEDS数量的 LED 灯填充为一种固体颜色  
+该函数存在于自由函数与```CPixelView```类中
+
+```
+fill_solid(&leds[10], 10, CRGB::Green);		//将10-19对应led填充至绿色
+```
+  
+进入第二阶段“core-concepts”，首先学习“led-structures”理解LED数据结构  
+**6.26.2LED的数据结构**  
+
+FastLED 中最基本的数据结构是 `CRGB` 类数组：
+
+```cpp
+CRGB leds[NUM_LEDS];  // RGB 颜色值数组
+```
+
+数组中的每个元素表示对应编号led的CRGB值，通过索引可访问对应的单个LED  
+
+```CRGB```类有三个成员对应R、G、B三个*颜色通道*  
+对LEDs元素赋值可以使用命名颜色```CRGB::Red```或者直接创建CRGB对象```CRGB(255, 0, 0)```或者创建CHSV对象```CHSV(0, 255, 255)```自动转换为CRGB，转换算法名称为hsv2rgb_rainbow() (图像处理的算法，有点复杂，没看懂)
+
+
+对于```CRGB```类中的*颜色通道*也可以进行单独操作或者数组操作
+
+单独操作：  
+
+```
+RGB color = CRGB::Purple;	//创建颜色
+color.r += 50;				// 增加红色
+color.g /= 2;				// 绿色减半
+color.b = 0;				// 去除蓝色
+```
+
+数组操作
+
+```cpp
+leds[i].r += 10;  // 对i对应的LED的红色值增加
+```
+
+CRGB值之间可以进行数学运算
+
+```cpp
+CRGB color1 = CRGB(100, 50, 25);
+CRGB color2 = CRGB(50, 100, 25);
+
+// 颜色间叠加
+CRGB result = color1 + color2;  // (150, 150, 50)
+
+// 颜色进行放缩
+color1 *= 2;  // 所有颜色通道的值翻倍:(200, 100, 50)
+color1 /= 2;  // 所有颜色通道值减半:(50, 25, 12)
+
+// 改变各颜色通道的值
+leds[0] += CRGB(10, 0, 0);  // 增加红色
+```
+
+**6.26.3考虑内存开销**  
+每个内存占用3B内存
+
+**6.26.4范围处理**  
+
+使用```fill_solid()```对范围内的颜色进行处理
+
+```cpp
+// 10-19范围填充
+fill_solid(&leds[10], 10, CRGB::Green);
+
+// 使用指针运算
+CRGB* startPos = &leds[20];
+fill_solid(startPos, 15, CRGB::Blue);  // LEDs 20-34
+```
+
+将一个范围的颜色复制到另一个范围
+
+```cpp
+for (int i = 0; i < 10; i++) {
+    leds[i + 20] = leds[i];  // 复制LEDs 0-9 至 20-29
+}
+```
+
+**6.26.5经典LED绘制技术**  
+以下是一些基础的LED绘制效果，需要理解这些是如何实现的，大多数库中都没有
+
+```cpp
+//传递LED位置与颜色，设置单个像素函数
+void drawPixel(int position, CRGB color) {
+	if (position >= 0 && position < NUM_LEDS) {
+	leds[position] = color;
+    }
+}
+
+// 使用方式
+drawPixel(10, CRGB::Red);
+drawPixel(15, CRGB(0, 255, 128));
+```
+
+```cpp
+//传递起点与终点与颜色，通过设置连续的 LED 来创建线条
+void drawLine(int start, int end, CRGB color) {
+	if (start > end) {		//使线条无向
+	int temp = start;
+	start = end;
+	end = temp;
+    }
+    for (int i = start; i <= end && i < NUM_LEDS; i++) {
+        leds[i] = color;
+    }
+}
+
+// 从 LED 5 至 LED 20 画出红色线条
+drawLine(5, 20, CRGB::Red);
+```
+
+🌟🌟🌟坐标映射
+
+```cpp
+//定义矩阵长宽
+#define MATRIX_WIDTH 4
+#define MATRIX_HEIGHT 4
+
+/*
+3	2	1	0//第1行	 ^
+4	5	6	7				|
+11	10	9	8		HEIGHT
+12	13	14	15			|
+<---WIDTH--->		 v
+*/
+
+//给一对x，y值，返回其对应的led位置
+uint16_t XY(uint8_t x, uint8_t y) {
+    if (x >= MATRIX_WIDTH || y >= MATRIX_HEIGHT) return 0;
+
+    //最常见的布线方式是蜿蜒的之字形布局
+    if (y & 0x01) {
+        //第奇数行从后向前走
+        return (y * MATRIX_WIDTH) + (MATRIX_WIDTH - 1 - x);
+    } else {
+        //第偶数行从前向后走
+        return (y * MATRIX_WIDTH) + x;
+    }
+}
+
+//在X=5, Y=10位置处画像素
+leds[XY(5, 10)] = CRGB::Blue;
+
+//画一条水平线
+for (int x = 0; x < MATRIX_WIDTH; x++) {
+    leds[XY(x, 8)] = CRGB::Green;
+}
+```
+
+```cpp
+//多使用颜色结合，少使用颜色赋值（应该是为了平滑过度）
+
+// 使用加法混合变亮
+leds[i] += CRGB(20, 20, 20);
+
+// 平均混合颜色
+CRGB color1 = leds[i];
+CRGB color2 = CRGB::Blue;
+// blend(颜色1，颜色2，颜色2所占比例(256为100%))
+leds[i] = blend(color1, color2, 128); //原色与蓝色进行55混合
+```
+
+```cpp
+// 实现Larson Scanner，制作逐渐消失的拖尾
+//将所有LED变暗，再将新出现的点涂亮
+void larsonScanner() {
+    static int pos = 0;
+    static int direction = 1;
+
+    // 淡出所有LEDs
+    //将leds数组中的NUM_LEDS个灯的亮度降低20/256
+    fadeToBlackBy(leds, NUM_LEDS, 20);
+
+    // 绘制新的亮点
+    leds[pos] = CRGB::Red;
+
+    // 移动至下一个位置
+    pos += direction;
+    if (pos >= NUM_LEDS - 1 || pos <= 0) {
+        direction = -direction;
+    }
+}
+```
+matrix.md里面还有其他的更高阶的空间映射
+
 ## 6.25 
 
 今天浪费了一会儿在纠结于```CFastLED```，后面发现了项目自带有一个cookbook文件夹，里面详细记载了不同阶段应该学什么，今天学习第一阶段“getting-started”中的“concepts”，学习内容如下
 
-### 单个LED的寻址与控制
+**6.25.1 单个LED的寻址与控制**  
 灯带中每个LED都有一个索引，这个索引也就是位置，从下标0开始，通过控制灯带数组中的颜色值控制LED，颜色值的类型为CRGB  
 
 ```cpp
-CRGB leds[60];  //一个含有64个LED的灯带
+CRGB leds[60];  			 //一个含有64个LED的灯带
 
-leds[0] = CRGB::Red;    // 第一个LED 设置为红色
-leds[5] = CRGB::Blue;   // 第六个LED 设置为蓝色
+leds[0] = CRGB::Red;    	// 第一个LED 设置为红色
+leds[5] = CRGB::Blue;   	// 第六个LED 设置为蓝色
 ```
 
-### RGB与HSV颜色模型
-FastLED有两种颜色模式，分别为RGB与HSV
 
-**RGB：**
+**6.25.2 RGB与HSV颜色模型**  
+
+FastLED有两种颜色模式，分别为RGB与HSV，两种颜色模式分别有各自的cpp类```CRGB```和```CHSV```
+
+*RGB：*
 
 ```cpp
 //RGB模式通过分别控制红色R，绿色G，蓝色B，实现控制灯的颜色
 //每个颜色的取值范围分别为0-255
-CRGB color_Red = CRGB(255, 0, 0);      		 // Red
-CRGB color_Green = CRGB(0, 255, 0);     		 // Green
-CRGB color_Blue = CRGB(0, 0, 255);      		// Blue
-CRGB color_White = CRGB(255, 255, 255);  	// White
+CRGB color_Red = CRGB(255, 0, 0);      // Red
+CRGB color_Green = CRGB(0, 255, 0);		// Green
+CRGB color_Blue = CRGB(0, 0, 255);		// Blue
+CRGB color_White = CRGB(255, 255, 255);	// White
 ```
-**HSV:**
+*HSV:*
 
 ```cpp
 //HSV模式通过分别控制色调Hue，饱和度Saturation，明度Value（感觉和亮度没区别），实现控制灯的颜色
@@ -45,7 +246,7 @@ leds[0] = hsv_Red;
 
 文档建议使用HSV，因为可以只通过改变色调Hue实现丝滑的颜色过渡实现彩虹效果和更简单的亮度控制
 
-### 程序的基本setup与loop模式
+**6.25.3 程序的基本setup与loop模式**  
 文档规定每个FastLED程序应该遵循：
 
 ```cpp
@@ -72,7 +273,7 @@ void loop() {
 }
 ```
 
-### 如何为特定硬件配置FastLED
+**6.25.4 如何为特定硬件配置FastLED**  
 配置LED，在```setup()```前告诉程序硬件信息：
 
 ```cpp
@@ -84,7 +285,7 @@ void loop() {
 CRGB leds[NUM_LEDS];			//创建一个灯珠数组，记载每个灯珠的颜色
 ```
 
-### 亮度控制与静态变量
+**6.25.5 亮度控制与静态变量**  
 亮度控制:```FastLED.setBrightness(50);```亮度值的范围为0-255  
 使用```static```变了可以在每次loop循环中，记住变量的值
 

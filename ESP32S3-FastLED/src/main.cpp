@@ -28,7 +28,7 @@ void setup() {
      *
      * setBrightness() 来自 <FastLED.h>
      */
-    //FastLED.setBrightness(32);
+    FastLED.setBrightness(32);
 }
 
 void loop() {
@@ -47,7 +47,7 @@ void loop() {
     value %= 64;
     saturation += 2;
     saturation %= 130;
-
+    fill_solid(leds, NUM_LEDS, hsvColor); // 将所有灯珠设置为当前颜色
     FastLED.show();
     delay(50); // 延迟 100ms
 }
