@@ -1,5 +1,112 @@
 # 项目学习日志
 
+## 6.30
+**6.30.1动画效果**  
+*文档:color-theory.md*  
+
+实现可配置的动画变速效果
+
+```cpp
+uint8_t animationSpeed = 32;  // 每次起始色相的改变值
+
+void loop() {
+    EVERY_N_MILLISECONDS(200) {
+	static uint8_t hue = 0;
+	
+	// 后两个参数分别起始色相与灯珠间色相步进值
+	fill_rainbow(leds, NUM_LEDS, hue, 2);
+	FastLED.show();
+	
+	hue += animationSpeed;  // 改变起始色相
+    }
+}
+```
+
+Time-Based Animation
+
+## 6.29
+做了一个适配我的8\*8之字形矩阵LED的取模得字符数组的小网页
+
+**6.29.1 FastLED的颜色模型**  *_(尽可能只使用一个颜色模型)_*   
+*文档:color-theory.md*  
+
+HSV转换至RGB在FastLED项目中可以由库函数自动进行，但是RGB到HSV必须手动进行操作，尽量在一开始就选择HSV
+
+arduino中有一个map函数可以实现数值映射  
+```返回值类型 map(要映射的值,  原始范围下限, 原始范围上限, 目标下限, 目标上限)```
+
+**6.29.2 FastLED的时序与帧率**  
+*文档:timing.md*  
+
+帧率计算：帧率 = 1000ms/刷新间隔时间
+
+帧率测量：使用```FastLED.getFPS()```通过监控show函数，跟踪实时帧率，返回一个uint16_t类型的fps值，使用方式如下：
+
+```cpp
+void loop() {
+	updateLEDs();
+	FastLED.show();
+	// 串口输出当前FPS
+	EVERY_N_SECONDS(1) {
+	uint16_t fps = FastLED.getFPS();
+	Serial.print("FPS: ");
+	Serial.println(fps);
+    }
+
+	delay(20);
+}
+```
+
+最基础的延时方式是使用```delay() ```设置ms延时，但是会造成阻塞
+
+```FastLED.delay()```为FastLED库自己的延迟函数，相较于```delay()```内置处理了抖动，可以获得更好的颜色渲染效果
+
+也可以使用FastLED内置的两种宏实现非阻塞式时序
+EVERY_N_MILLISECONDS Macro，毫秒宏，设置精度为毫秒，好处是可以非阻塞，但是精度与灵活度不如自定义时序，使用方式如下:
+
+```cpp
+void loop() {
+	//毫秒宏
+	// 每隔20ms执行一次，帧率为1000/20 = 50 FPS
+	EVERY_N_MILLISECONDS(20) 
+	{  
+      updateLEDs();
+      FastLED.show();
+      }
+      
+	// 其余代码可以正常运行
+      checkButtons();
+      readSensors();
+}
+```
+
+EVERY_N_SECONDS Macro，秒宏，设置的间隔单位为秒，方式与毫秒宏相似，适用于较慢更新
+
+自定义非阻塞时序，使用```millis()```实现完全控制, 虽然控制精准，但是需要管理更多代码使用方式如下:
+
+```cpp
+uint32_t lastUpdate = 0;				// 定义最近更新时间
+const uint32_t updateInterval = 20;	// 定义更新间隔为20ms，50 FPS
+
+void loop() {
+	uint32_t now = millis();			// 获取当前时间
+
+	// 当前时间距离上次更新已经到达间隔
+	if (now - lastUpdate >= updateInterval) {
+		lastUpdate = now;			//当前时间设为最近更新时间
+
+		updateLEDs();
+		FastLED.show();
+    }
+
+    // 其他代码正常运行
+    checkButtons();
+}
+```
+
+多时序间隔与自定义非阻塞时序类似，为每个时序单独设置时间变量：上次更新时间```LastUpdate```与间隔```Interval```
+
+
 ## 6.26
 
 第一个LED闪烁程序比较简单，简要总结一下其中的函数
